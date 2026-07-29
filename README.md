@@ -105,8 +105,6 @@ Nomes e assinaturas podem ser adaptados, desde que as garantias sejam preservada
 
 ### 6.0 Regra de modelagem
 
-**Entidades, value objects e eventos devem ser `class`, não `interface`.**
-
 - Construtor `private` ou `protected` + **factories estáticas** (`create`, `open`, `rehydrate`);
 - estado mutável em campos privados, exposto por getters — **sem setters públicos**;
 - as invariantes vivem **dentro** da classe, não no service. Modelos anêmicos (classe usada só como bag de propriedades) serão avaliados como interface disfarçada;
