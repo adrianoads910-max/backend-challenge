@@ -22,6 +22,7 @@ export function mikroOrmConfig(db: DatabaseSettings) {
       tableName: "mikro_orm_migrations",
       transactional: true,
       allOrNothing: true,
+      silent: true,
       migrationsList: [
         { name: "Migration20261006000001_initial_schema", class: Migration20261006000001_initial_schema },
       ],

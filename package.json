@@ -3,7 +3,19 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "scripts": {},
+  "scripts": {
+    "start": "bun src/main.ts",
+    "dev": "bun --watch src/main.ts",
+    "migrate": "bun src/migrate.ts up",
+    "migrate:down": "bun src/migrate.ts down",
+    "typecheck": "tsc --noEmit -p .",
+    "infra:up": "docker compose up -d postgres ministack",
+    "test": "bun run test:unit && bun run test:integration && bun run test:concurrency",
+    "test:unit": "bun test test/unit",
+    "test:integration": "bun test --timeout 120000 test/integration",
+    "test:concurrency": "bun test --timeout 180000 test/concurrency",
+    "test:load": "bun scripts/load-test.ts"
+  },
   "dependencies": {
     "@aws-sdk/client-sqs": "^3.1146.0",
     "@mikro-orm/core": "^6",
