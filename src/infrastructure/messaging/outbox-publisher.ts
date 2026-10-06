@@ -87,29 +87,33 @@ export class OutboxPublisher {
 
     const published: string[] = [];
     const failed = new Map<string, string>();
-    for (let i = 0; i < rows.length; i += 10) {
-      const chunk = rows.slice(i, i + 10);
-      try {
-        const res = await this.sqs.send(
-          new SendMessageBatchCommand({
-            QueueUrl: this.queueUrl,
-            Entries: chunk.map((row, idx) => ({
-              Id: String(idx),
-              MessageBody: JSON.stringify(row.payload),
-              ...(this.fifo ? { MessageGroupId: row.aggregate_id, MessageDeduplicationId: row.id } : {}),
-              MessageAttributes: {
-                eventType: { DataType: "String", StringValue: row.event_type },
-                eventId: { DataType: "String", StringValue: row.id },
-              },
-            })),
-          }),
-        );
-        for (const ok of res.Successful ?? []) published.push(chunk[Number(ok.Id)]!.id);
-        for (const ko of res.Failed ?? []) failed.set(chunk[Number(ko.Id)]!.id, ko.Message ?? ko.Code ?? "failed");
-      } catch (err) {
-        for (const row of chunk) failed.set(row.id, (err as Error).message ?? "publish failed");
-      }
-    }
+    // SQS batches hold at most 10 entries; send all chunks of the claim concurrently.
+    const chunks: ClaimedRow[][] = [];
+    for (let i = 0; i < rows.length; i += 10) chunks.push(rows.slice(i, i + 10));
+    await Promise.all(
+      chunks.map(async (chunk) => {
+        try {
+          const res = await this.sqs.send(
+            new SendMessageBatchCommand({
+              QueueUrl: this.queueUrl,
+              Entries: chunk.map((row, idx) => ({
+                Id: String(idx),
+                MessageBody: JSON.stringify(row.payload),
+                ...(this.fifo ? { MessageGroupId: row.aggregate_id, MessageDeduplicationId: row.id } : {}),
+                MessageAttributes: {
+                  eventType: { DataType: "String", StringValue: row.event_type },
+                  eventId: { DataType: "String", StringValue: row.id },
+                },
+              })),
+            }),
+          );
+          for (const ok of res.Successful ?? []) published.push(chunk[Number(ok.Id)]!.id);
+          for (const ko of res.Failed ?? []) failed.set(chunk[Number(ko.Id)]!.id, ko.Message ?? ko.Code ?? "failed");
+        } catch (err) {
+          for (const row of chunk) failed.set(row.id, (err as Error).message ?? "publish failed");
+        }
+      }),
+    );
 
     this.faultInjection("crash_after_publish_before_mark");
     await this.markPublished(published);

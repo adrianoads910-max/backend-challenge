@@ -38,7 +38,7 @@ const schema = z.object({
   SQS_REDRIVE_MAX_RECEIVES: int(10),
 
   OUTBOX_POLL_MS: int(500),
-  OUTBOX_BATCH_SIZE: int(50),
+  OUTBOX_BATCH_SIZE: int(100),
   OUTBOX_LEASE_MS: int(30_000),
 
   PENDING_REFERENCE_POLL_MS: int(1_000),
