@@ -16,7 +16,7 @@ function balanceChanged() {
 
 describe("integration events", () => {
   test("envelope carries type and version from the class and MoneyProps strings in data", () => {
-    const json = balanceChanged().toJSON();
+    const json: unknown = balanceChanged().toJSON();
     expect(json).toEqual({
       eventId: "ev-1",
       eventType: "WalletBalanceChanged",

@@ -32,7 +32,13 @@ export async function resolveQueues(sqs: SQSClient, config: AppConfig): Promise<
     if (!config.SQS_AUTO_CREATE_QUEUES) {
       return (await sqs.send(new GetQueueUrlCommand({ QueueName: name }))).QueueUrl!;
     }
-    return (await sqs.send(new CreateQueueCommand({ QueueName: name, Attributes: attributes }))).QueueUrl!;
+    try {
+      return (await sqs.send(new CreateQueueCommand({ QueueName: name, Attributes: attributes }))).QueueUrl!;
+    } catch (err) {
+      // Already created by another instance with different attributes: use it as it is.
+      if ((err as Error).name !== "QueueAlreadyExists" && !/already exists/i.test((err as Error).message)) throw err;
+      return (await sqs.send(new GetQueueUrlCommand({ QueueName: name }))).QueueUrl!;
+    }
   };
   const dlq = await ensure(config.SQS_WAGER_DLQ, { ...fifo, MessageRetentionPeriod: "1209600" });
   const dlqArn = (

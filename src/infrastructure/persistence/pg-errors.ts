@@ -33,7 +33,8 @@ export function classifyTransient(err: unknown): TransientError | undefined {
   else if (code === "53300" || code === "57P03") reason = "db_unavailable";
   else if (code?.startsWith("08") || code === "57P01" || code === "57P02") reason = "connection";
   else if (code && NETWORK_CODES.has(code)) reason = "connection";
-  else if (name === "ConnectionException" || name === "KnexTimeoutError") reason = "connection";
+  else if (name === "KnexTimeoutError" || /Timeout acquiring a connection/i.test(message)) reason = "pool_exhausted";
+  else if (name === "ConnectionException") reason = "connection";
   else if (/Connection terminated|connect ECONNREFUSED|timeout exceeded when trying to connect|Client has encountered a connection error/i.test(message)) {
     reason = "connection";
   }
