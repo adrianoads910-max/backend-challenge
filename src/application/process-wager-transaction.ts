@@ -210,30 +210,34 @@ export class ProcessWagerTransaction {
     return { transaction: candidate, idempotentReplay: false, duplicateMessage: false };
   }
 
+  /**
+   * Two lookups (by idempotency key, then by provider external id). Under READ COMMITTED each one
+   * sees the latest commit, so a concurrent duplicate may commit *between* them: it is then found
+   * by external id with the SAME key — that is a replay, not a conflict.
+   */
   private async findReplay(
     repos: TransactionalRepositories,
     candidate: WagerTransaction,
   ): Promise<WagerResult | undefined> {
-    const existing = await repos.transactions.findByIdempotencyKey(candidate.idempotencyKey);
-    if (existing) {
-      if (!existing.matchesPayload(candidate.payloadHash)) {
-        this.metrics.duplicateDetected("idempotency_conflict");
-        throw new IdempotencyConflictError(
-          `idempotency key "${candidate.idempotencyKey}" was already used with a different payload`,
-          { transactionId: existing.id },
-        );
-      }
-      return { transaction: existing, idempotentReplay: true, duplicateMessage: false };
-    }
-    const sameExternal = await repos.transactions.findByExternalId(candidate.providerId, candidate.externalTransactionId);
-    if (sameExternal) {
+    const existing =
+      (await repos.transactions.findByIdempotencyKey(candidate.idempotencyKey)) ??
+      (await repos.transactions.findByExternalId(candidate.providerId, candidate.externalTransactionId));
+    if (!existing) return undefined;
+    if (existing.idempotencyKey !== candidate.idempotencyKey) {
       this.metrics.duplicateDetected("idempotency_conflict");
       throw new IdempotencyConflictError(
         `transaction ${candidate.providerId}/${candidate.externalTransactionId} was already submitted under another idempotency key`,
-        { transactionId: sameExternal.id },
+        { transactionId: existing.id },
       );
     }
-    return undefined;
+    if (!existing.matchesPayload(candidate.payloadHash)) {
+      this.metrics.duplicateDetected("idempotency_conflict");
+      throw new IdempotencyConflictError(
+        `idempotency key "${candidate.idempotencyKey}" was already used with a different payload`,
+        { transactionId: existing.id },
+      );
+    }
+    return { transaction: existing, idempotentReplay: true, duplicateMessage: false };
   }
 
   private report(result: WagerResult, opts: ProcessOptions, started: number): void {

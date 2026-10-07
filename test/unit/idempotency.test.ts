@@ -163,6 +163,22 @@ describe("ProcessWagerTransaction idempotency", () => {
     await expect(useCase.execute(command({ idempotencyKey: "different" }), http)).rejects.toBeInstanceOf(IdempotencyConflictError);
   });
 
+  test("regression: duplicate committed between the key lookup and the external-id lookup is a replay", async () => {
+    await useCase.execute(command(), http);
+    // Simulate the READ COMMITTED window: the first lookup (by key) misses, the second one hits.
+    const realRun = mem.run.bind(mem);
+    mem.run = (work) =>
+      realRun((repos) => {
+        const byKey = repos.transactions.findByIdempotencyKey;
+        let calls = 0;
+        repos.transactions.findByIdempotencyKey = async (k) => (calls++ === 0 ? undefined : byKey(k));
+        return work(repos);
+      });
+    const replay = await useCase.execute(command(), http);
+    expect(replay.idempotentReplay).toBe(true);
+    expect(mem.ledger).toHaveLength(1);
+  });
+
   test("inbox: same message id is a no-op; same id with another body is a conflict", async () => {
     const inbox = { consumerName: "c", messageId: "m1", payloadHash: "h1" };
     await useCase.execute(command(), { ...http, source: "sqs", inbox });
