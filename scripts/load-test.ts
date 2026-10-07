@@ -10,12 +10,61 @@
  * transient errors, lock conflicts and outbox lag, then proves consistency with reconciliation.
  */
 
+import {
+  CreateQueueCommand,
+  DeleteMessageBatchCommand,
+  PurgeQueueCommand,
+  ReceiveMessageCommand,
+  SQSClient,
+} from "@aws-sdk/client-sqs";
+
 const targets = (process.env.LOAD_TARGETS ?? "http://localhost:3101,http://localhost:3102,http://localhost:3103").split(",");
 const durationS = Number(process.env.LOAD_DURATION_S ?? 60);
 const concurrency = Number(process.env.LOAD_CONCURRENCY ?? 64);
 const normalWallets = Number(process.env.LOAD_WALLETS ?? 200);
 const hotWallets = Number(process.env.LOAD_HOT_WALLETS ?? 2);
 const hotShare = Number(process.env.LOAD_HOT_SHARE ?? 0.2);
+const eventsQueue = process.env.LOAD_EVENTS_QUEUE ?? "wagering-events.fifo";
+const sqs = new SQSClient({
+  endpoint: process.env.LOAD_SQS_ENDPOINT ?? "http://localhost:4566",
+  region: "us-east-1",
+  credentials: { accessKeyId: "test", secretAccessKey: "test" },
+});
+
+/**
+ * Downstream consumer of the integration events: receives + deletes, counting unique eventIds and
+ * duplicates. Without it the emulated queue only grows, and MiniStack's send latency grows with
+ * queue depth (~9k msg/s on an empty FIFO queue, ~140 msg/s at 80k messages) — that would measure
+ * the emulator, not the outbox.
+ */
+const eventIds = new Set<string>();
+let eventDuplicates = 0;
+let consuming = true;
+async function consumeEvents(queueUrl: string) {
+  while (consuming) {
+    try {
+      const res = await sqs.send(
+        new ReceiveMessageCommand({ QueueUrl: queueUrl, MaxNumberOfMessages: 10, WaitTimeSeconds: 1, VisibilityTimeout: 30 }),
+      );
+      const messages = res.Messages ?? [];
+      for (const m of messages) {
+        const id = (JSON.parse(m.Body ?? "{}") as { eventId?: string }).eventId ?? "";
+        if (eventIds.has(id)) eventDuplicates++;
+        else eventIds.add(id);
+      }
+      if (messages.length) {
+        await sqs.send(
+          new DeleteMessageBatchCommand({
+            QueueUrl: queueUrl,
+            Entries: messages.map((m, i) => ({ Id: String(i), ReceiptHandle: m.ReceiptHandle! })),
+          }),
+        );
+      }
+    } catch {
+      await Bun.sleep(200);
+    }
+  }
+}
 
 type Wallet = { walletId: string; playerId: string };
 type Op = { payload: Record<string, unknown>; key: string };
@@ -94,7 +143,12 @@ async function main() {
   console.log(`targets=${targets.join(",")} duration=${durationS}s concurrency=${concurrency}`);
   const normal = await Promise.all(Array.from({ length: normalWallets }, () => createWallet("1000000.00")));
   const hot = await Promise.all(Array.from({ length: hotWallets }, () => createWallet("1000000.00")));
+  const eventsUrl = (await sqs.send(new CreateQueueCommand({ QueueName: eventsQueue, Attributes: eventsQueue.endsWith(".fifo") ? { FifoQueue: "true" } : {} }))).QueueUrl!;
+  await sqs.send(new PurgeQueueCommand({ QueueUrl: eventsUrl })).catch(() => undefined);
+  const consumers = Array.from({ length: 8 }, () => consumeEvents(eventsUrl));
   const before = await scrape();
+  // A backlog left by a previous run would distort the lag numbers: report it.
+  const initialBacklog = sum(before, "outbox_pending_messages") / targets.length;
 
   let maxLag = 0;
   const lagSamples: number[] = [];
@@ -134,13 +188,17 @@ async function main() {
 
   // let the outbox drain, then reconcile every wallet
   const drainStart = performance.now();
-  for (let i = 0; i < 120; i++) {
+  let drained = false;
+  for (let i = 0; i < 600 && !drained; i++) {
     const text = await (await fetch(`${targets[0]}/metrics`)).text();
-    if (Number(/^outbox_pending_messages (\S+)/m.exec(text)?.[1] ?? 1) === 0) break;
-    await Bun.sleep(500);
+    drained = Number(/^outbox_pending_messages (\S+)/m.exec(text)?.[1] ?? 1) === 0;
+    if (!drained) await Bun.sleep(500);
   }
   const drainS = (performance.now() - drainStart) / 1000;
   const after = await scrape();
+  await Bun.sleep(3_000); // let the downstream consumer catch the tail
+  consuming = false;
+  await Promise.all(consumers);
 
   let inconsistent = 0;
   for (const w of [...normal, ...hot]) {
@@ -174,7 +232,10 @@ async function main() {
       max: +maxLag.toFixed(2),
       avg: +(lagSamples.reduce((a, b) => a + b, 0) / Math.max(1, lagSamples.length)).toFixed(2),
       drainAfterLoadS: +drainS.toFixed(1),
+      drained,
+      initialBacklog,
     },
+    eventsDelivered: { unique: eventIds.size, duplicates: eventDuplicates },
     reconciliation: { wallets: normal.length + hot.length, inconsistent },
   };
   console.log(JSON.stringify(report, null, 2));

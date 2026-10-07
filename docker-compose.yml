@@ -31,6 +31,8 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+      # crash recovery (WAL redo) after an unclean host shutdown can take minutes
+      start_period: 180s
 
   ministack:
     image: ministackorg/ministack:latest

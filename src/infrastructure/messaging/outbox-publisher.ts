@@ -82,8 +82,11 @@ export class OutboxPublisher {
 
   /** One claim → publish → mark cycle. Returns how many events were published. */
   async publishBatch(): Promise<number> {
+    const claimTimer = this.metrics.outboxPhase.startTimer({ phase: "claim" });
     const rows = await this.claim();
+    claimTimer();
     if (rows.length === 0) return 0;
+    const sendTimer = this.metrics.outboxPhase.startTimer({ phase: "send" });
 
     const published: string[] = [];
     const failed = new Map<string, string>();
@@ -115,8 +118,11 @@ export class OutboxPublisher {
       }),
     );
 
+    sendTimer();
     this.faultInjection("crash_after_publish_before_mark");
+    const markTimer = this.metrics.outboxPhase.startTimer({ phase: "mark" });
     await this.markPublished(published);
+    markTimer();
     await this.reschedule(rows.filter((r) => failed.has(r.id)), failed);
 
     for (const row of rows) if (published.includes(row.id)) this.metrics.outboxPublished.inc({ event_type: row.event_type });
