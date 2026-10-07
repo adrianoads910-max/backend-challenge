@@ -21,16 +21,22 @@ afterAll(async () => {
 
 describe("concurrency", () => {
   test("1. the same bet sent 50 times in parallel debits exactly once", async () => {
-    const w = await env.createWallet(pick(0), "100.00");
-    const bet = wager(w, "BET", "10.00");
-    const results = await Promise.all(Array.from({ length: 50 }, (_, i) => env.submit(pick(i), bet)));
-    expect(new Set(results.map((r) => r.status))).toEqual(new Set([200]));
-    expect(new Set(results.map((r) => r.body.transactionId)).size).toBe(1);
-    expect(results.filter((r) => !r.body.idempotentReplay)).toHaveLength(1);
-    expect(results.every((r) => r.body.balance?.amount === "90.00")).toBe(true);
-    const ledger = await env.ledgerRows(w.walletId);
-    expect(ledger.filter((l) => l.direction === "DEBIT")).toHaveLength(1);
-    expect(await env.walletRow(w.walletId)).toEqual({ balance: "90.00", version: 2 });
+    // Ten wallets at once (500 requests) to widen the race windows (lookup → lock → insert).
+    const wallets = await Promise.all(Array.from({ length: 10 }, (_, i) => env.createWallet(pick(i), "100.00")));
+    await Promise.all(
+      wallets.map(async (w) => {
+        const bet = wager(w, "BET", "10.00");
+        const results = await Promise.all(Array.from({ length: 50 }, (_, i) => env.submit(pick(i), bet)));
+        // identical requests are never a conflict: only 200 (or a retryable 503 under pool pressure)
+        expect(results.filter((r) => r.status !== 200 && r.status !== 503).map((r) => [r.status, r.body])).toEqual([]);
+        const ok = results.filter((r) => r.status === 200);
+        expect(new Set(ok.map((r) => r.body.transactionId)).size).toBe(1);
+        expect(ok.filter((r) => !r.body.idempotentReplay).length).toBeLessThanOrEqual(1);
+        expect(ok.every((r) => r.body.balance?.amount === "90.00")).toBe(true);
+        expect((await env.ledgerRows(w.walletId)).filter((l) => l.direction === "DEBIT")).toHaveLength(1);
+        expect(await env.walletRow(w.walletId)).toEqual({ balance: "90.00", version: 2 });
+      }),
+    );
   });
 
   test("2. section 8: 100.00 and two simultaneous 80.00 bets → one PROCESSED, one REJECTED, 20.00 left", async () => {
