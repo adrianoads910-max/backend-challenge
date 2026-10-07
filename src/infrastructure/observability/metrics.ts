@@ -65,6 +65,13 @@ export class PromMetrics implements WageringMetrics {
     labelNames: ["event_type"],
     registers: [this.registry],
   });
+  readonly outboxPhase = new Histogram({
+    name: "outbox_publish_phase_seconds",
+    help: "Duration of each outbox relay phase (claim, send, mark)",
+    labelNames: ["phase"],
+    buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5],
+    registers: [this.registry],
+  });
   readonly outboxFailures = new Counter({
     name: "outbox_publish_failures_total",
     help: "Outbox publish failures (rescheduled with backoff)",
